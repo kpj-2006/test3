@@ -1,0 +1,89 @@
+name: Enforce PR Rules
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  issues: read
+
+jobs:
+  enforce-issue-linking-and-assignee:
+    runs-on: ubuntu-latest
+    name: Validate Issue Link & Assignee
+    steps:
+      - name: Check PR Body for Issue Link
+        id: extract-issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prBody = context.payload.pull_request.body || '';
+            const prAuthor = context.payload.pull_request.user.login;
+            
+            console.log('PR Body:', prBody);
+            console.log('PR Author:', prAuthor);
+            
+            // Match patterns: Fixes #123, Closes #123, Resolves #123
+            const issuePattern = /(?:fixes|closes|resolves)\s+#(\d+)/gi;
+            const matches = [...prBody.matchAll(issuePattern)];
+            
+            if (matches.length === 0) {
+              core.setFailed('❌ No linked issue found! PR must contain "Fixes #123", "Closes #123", or "Resolves #123"');
+              
+              // Close the PR automatically
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                state: 'closed'
+              });
+              
+              return;
+            }
+            
+            // Get the first linked issue number
+            const issueNumber = matches[0][1];
+            console.log('Found linked issue:', issueNumber);
+            core.setOutput('issue-number', issueNumber);
+            core.setOutput('pr-author', prAuthor);
+
+      - name: Verify PR Author is Issue Assignee
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = '${{ steps.extract-issue.outputs.issue-number }}';
+            const prAuthor = '${{ steps.extract-issue.outputs.pr-author }}';
+            
+            // Fetch issue details
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber
+            });
+            
+            const assignees = issue.assignees.map(a => a.login);
+            console.log('Issue assignees:', assignees);
+            
+            if (assignees.length === 0) {
+              core.setFailed(`❌ Issue #${issueNumber} has no assignees! Issues must be assigned before creating a PR.`);
+              return;
+            }
+            
+            if (!assignees.includes(prAuthor)) {
+              core.setFailed(`❌ PR author @${prAuthor} is not assigned to issue #${issueNumber}. Only assignees can open PRs for this issue.\n\nAssigned to: ${assignees.map(a => '@' + a).join(', ')}`);
+              
+              // Close the PR automatically
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                state: 'closed'
+              });
+              return;
+            }
+            
+            console.log('✅ All checks passed!');
+            console.log(`- Issue #${issueNumber} is linked`);
+            console.log(`- PR author @${prAuthor} is assigned to the issue`);
