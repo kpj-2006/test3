@@ -68,6 +68,15 @@ jobs:
             
             if (assignees.length === 0) {
               core.setFailed(`❌ Issue #${issueNumber} has no assignees! Issues must be assigned before creating a PR.`);
+              
+              // Close the PR automatically
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                state: 'closed'
+              });
+              
               return;
             }
             
